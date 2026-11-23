@@ -1,0 +1,71 @@
+name: Release build
+
+# Builds NitroSystemII.dll when a release is published on GitHub and attaches it to that release.
+# It can also be started by hand from the Actions tab (Run workflow) to test the build: that run keeps
+# the DLL as a workflow artifact instead. Nothing builds on ordinary pushes or pull requests.
+# RELEASING.md: the release must contain only the DLL, so only the DLL is attached.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to attach the DLL to a release
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_MINGW_VERSION: "20260922"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install llvm-mingw
+        run: |
+          curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz" -o llvm-mingw.tar.xz
+          sudo mkdir -p /opt/llvm-mingw
+          sudo tar -xJf llvm-mingw.tar.xz -C /opt/llvm-mingw --strip-components=1
+          echo "/opt/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      # The platform's update check compares the release tag (a leading v is ignored) with info.version in
+      # src/nitro_mod.cpp, so a release whose tag and version disagree would never be offered as an update.
+      - name: Check the tag matches the version in the source
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          src_version=$(grep -oP 'info\.version\s*=\s*"\K[^"]+' src/nitro_mod.cpp | head -n1)
+          tag_version="${TAG#v}"
+          echo "tag: $tag_version, source: $src_version"
+          if [ "$tag_version" != "$src_version" ]; then
+            echo "::error::The release tag ($TAG) does not match info.version ($src_version) in src/nitro_mod.cpp"
+            exit 1
+          fi
+
+      - name: Build
+        run: bash scripts/build.sh
+
+      - name: Check the DLL
+        run: |
+          test -s dist/NitroSystemII.dll
+          file dist/NitroSystemII.dll
+          ls -l dist/NitroSystemII.dll
+
+      - name: Attach the DLL to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/NitroSystemII.dll --clobber
+
+      - name: Keep the DLL as a workflow artifact (manual runs)
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NitroSystemII-manual-build-${{ github.run_number }}
+          path: dist/NitroSystemII.dll
+          if-no-files-found: error
+          retention-days: 14
